@@ -1,0 +1,5 @@
+{
+  "name": "Smart CV Builder AI",
+  "description": "AI-powered CV tailoring tool using Gemini 3 Pro to analyze job descriptions and rewrite CVs for maximum impact.",
+  "requestFramePermissions": []
+}
