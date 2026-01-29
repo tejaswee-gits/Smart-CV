@@ -5,13 +5,13 @@ import CVPreview from './components/CVPreview';
 import { MasterCVData, ChatMessage } from './types';
 import { jsPDF } from 'jspdf';
 
-// --- Master Data (Stateful in App for potential editing, but kept const here for initial) ---
+// --- Master Data ---
 const INITIAL_MASTER_CV_DATA: MasterCVData = {
   personalInfo: {
     name: "Tejaswee Singh",
     email: "t.tejaswee8@gmail.com",
     phone: "+33 745740529",
-    location: "Paris, France (Open to Relocation)",
+    location: "Paris, France",
     nationality: "Indian",
     languages: "English (C1), Hindi (Native), French (A2)"
   },
@@ -134,6 +134,7 @@ const INITIAL_MASTER_CV_DATA: MasterCVData = {
 const App: React.FC = () => {
   const [jobDescription, setJobDescription] = useState('');
   const [tailoredCV, setTailoredCV] = useState('');
+  const [filenameBase, setFilenameBase] = useState('CV');
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState('');
@@ -162,15 +163,28 @@ const App: React.FC = () => {
     setError('');
     setSuccess('');
     setTailoredCV('');
-    setViewMode('preview'); // Reset to preview on new generation
+    setViewMode('preview');
 
     try {
       const chatContext = chatMessages
         .map(m => `${m.role.toUpperCase()}: ${m.content}`)
         .join('\n');
 
-      const result = await generateTailoredCV(INITIAL_MASTER_CV_DATA, jobDescription, chatContext);
-      setTailoredCV(result);
+      const rawResult = await generateTailoredCV(INITIAL_MASTER_CV_DATA, jobDescription, chatContext);
+      
+      // Metadata Parsing for Filename
+      const metadataRegex = /<!-- METADATA: (.*?) -->/;
+      const match = rawResult.match(metadataRegex);
+      let cleanCV = rawResult;
+      
+      if (match) {
+        setFilenameBase(match[1].trim());
+        cleanCV = rawResult.replace(metadataRegex, '').trim();
+      } else {
+        setFilenameBase('Tailored_CV');
+      }
+
+      setTailoredCV(cleanCV);
       setSuccess('CV Generated successfully! Review and download below.');
     } catch (err: any) {
       setError(err.message || "An error occurred while generating the CV.");
@@ -196,7 +210,7 @@ const App: React.FC = () => {
     }
   };
 
-  // --- PDF GENERATOR V4: BOLD PARSING SUPPORT ---
+  // --- PDF GENERATOR V5: Smart Links, Adaptive Height, Metadata Naming ---
   const downloadAsPDF = () => {
     if (!tailoredCV) {
       setError('No CV to download. Please generate one first.');
@@ -206,194 +220,210 @@ const App: React.FC = () => {
     setIsDownloading(true);
 
     try {
+      // 1. Filename Construction: [Company]_[Title]_[Date]_[EN]
+      const date = new Date();
+      const day = date.getDate();
+      const month = date.toLocaleString('default', { month: 'short' });
+      const dateStr = `${day}_${month}`; // e.g., 1_Jan
+      const safeFilenameBase = filenameBase.replace(/[^a-zA-Z0-9_]/g, '_');
+      const finalFilename = `${safeFilenameBase}_${dateStr}_EN.pdf`;
+
+      // 2. Rendering Logic (Abstracted for Dry Run & Final Run)
+      // Returns the total height used
+      const renderDocument = (doc: jsPDF, dryRun: boolean): number => {
+          const pageWidth = 210;
+          const margin = 12;
+          const maxLineWidth = pageWidth - (margin * 2);
+          let yPos = 15;
+
+          // Helper to add Bold segments
+          const printLineWithBold = (line: string, x: number, y: number, fontSize: number, align: 'left' | 'center' | 'justify' = 'left', maxWidth?: number) => {
+              const textWidth = doc.getTextWidth(line.replace(/\*\*/g, ''));
+              
+              if (maxWidth && textWidth > maxWidth && align === 'justify') {
+                  // Fallback for wrapped blocks
+                  doc.setFontSize(fontSize);
+                  doc.setFont("times", "normal");
+                  if (!dryRun) doc.text(line.replace(/\*\*/g, ''), x, y, { maxWidth, align: 'justify' });
+                  return doc.getTextDimensions(line.replace(/\*\*/g, ''), { maxWidth }).h;
+              }
+
+              doc.setFontSize(fontSize);
+              const parts = line.split(/(\*\*.*?\*\*)/g);
+              let currentX = x;
+              
+              if (align === 'center') {
+                  currentX = (pageWidth - textWidth) / 2;
+              }
+
+              parts.forEach(part => {
+                  const isBold = part.startsWith('**') && part.endsWith('**');
+                  const cleanPart = part.replace(/\*\*/g, '');
+                  
+                  if (!dryRun) {
+                      doc.setFont("times", isBold ? "bold" : "normal");
+                      if (cleanPart) doc.text(cleanPart, currentX, y);
+                  }
+                  currentX += doc.getTextWidth(cleanPart);
+              });
+
+              return fontSize * 0.3527 + 2; // Line height approx
+          };
+
+          const lines = tailoredCV.split('\n');
+
+          for (let i = 0; i < lines.length; i++) {
+            let cleanLine = lines[i].trim();
+            let rawLine = cleanLine.replace(/\*\*/g, '');
+
+            if (!cleanLine) {
+                if (yPos > 20) yPos += 3;
+                continue;
+            }
+
+            if (cleanLine.startsWith('# ')) {
+                // Name
+                const text = rawLine.replace('# ', '').toUpperCase();
+                doc.setFontSize(20);
+                doc.setFont("times", "bold");
+                if (!dryRun) doc.text(text, pageWidth / 2, yPos, { align: "center" });
+                yPos += 9;
+
+            } else if (cleanLine.startsWith('## ')) {
+                // Section
+                const text = rawLine.replace('## ', '').toUpperCase();
+                doc.setFontSize(11);
+                doc.setFont("times", "bold");
+                doc.setTextColor(30, 58, 138);
+                if (!dryRun) {
+                    doc.text(text, margin, yPos);
+                    doc.setLineWidth(0.5);
+                    doc.setDrawColor(30, 58, 138);
+                    doc.line(margin, yPos + 1.5, pageWidth - margin, yPos + 1.5);
+                    doc.setTextColor(0, 0, 0);
+                }
+                yPos += 7;
+
+            } else if (cleanLine.startsWith('### ')) {
+                // Role
+                const roleText = rawLine.replace('### ', '');
+                doc.setFontSize(10);
+                doc.setFont("times", "bold");
+                
+                let dateText = "";
+                if (i + 1 < lines.length && lines[i+1].trim().startsWith('####')) {
+                    dateText = lines[i+1].trim().replace('#### ', '').replace(/\*\*/g, '');
+                    i++;
+                }
+
+                if (!dryRun) {
+                    doc.text(roleText, margin, yPos);
+                    if (dateText) {
+                        doc.setFont("times", "italic");
+                        doc.text(dateText, pageWidth - margin, yPos, { align: "right" });
+                        doc.setFont("times", "bold");
+                    }
+                }
+                yPos += 5;
+
+            } else if (cleanLine.startsWith('- ')) {
+                // Bullets / Skills
+                const text = cleanLine.replace('- ', '');
+                const bulletIndent = 4;
+                const isSkillLine = text.startsWith('**') && text.length < 100;
+
+                doc.setFontSize(9.5);
+                doc.setFont("times", "normal");
+
+                if (isSkillLine) {
+                    if (!dryRun) doc.text("•", margin, yPos);
+                    yPos += printLineWithBold(text, margin + bulletIndent, yPos, 9.5) - 2 + 5; // Adjust spacing
+                } else {
+                    const rawText = text.replace(/\*\*/g, '');
+                    const dims = doc.getTextDimensions(rawText, { maxWidth: maxLineWidth - bulletIndent });
+                    if (!dryRun) {
+                        doc.text("•", margin, yPos);
+                        doc.text(rawText, margin + bulletIndent, yPos, { maxWidth: maxLineWidth - bulletIndent, align: "justify" });
+                    }
+                    yPos += dims.h + 2;
+                }
+
+            } else if (cleanLine.startsWith('####')) {
+                // Orphan Date
+                const text = rawLine.replace('#### ', '');
+                doc.setFontSize(9.5);
+                doc.setFont("times", "italic");
+                if (!dryRun) doc.text(text, pageWidth - margin, yPos - 5, { align: "right" });
+
+            } else {
+                // Paragraphs & Contact
+                doc.setFontSize(9.5);
+                doc.setFont("times", "normal");
+                
+                if (rawLine.includes('|') || rawLine.includes('@')) {
+                    // Contact Line with potential Links
+                    const parts = rawLine.split('|').map(p => p.trim());
+                    // Calculate center alignment manually
+                    let totalWidth = 0;
+                    const gap = 3; // mm space around pipe
+                    const widths = parts.map(p => doc.getTextWidth(p));
+                    totalWidth = widths.reduce((a, b) => a + b, 0) + (parts.length - 1) * gap;
+                    let currentX = (pageWidth - totalWidth) / 2;
+
+                    parts.forEach((part, idx) => {
+                        const isUrl = part.toLowerCase().includes('http') || part.toLowerCase().includes('linkedin');
+                        
+                        if (!dryRun) {
+                            if (isUrl) {
+                                doc.setTextColor(30, 58, 138); // Link Blue
+                                doc.text(part, currentX, yPos);
+                                // Add clickable link area
+                                doc.link(currentX, yPos - 3, widths[idx], 4, { url: part.startsWith('http') ? part : `https://${part}` });
+                                doc.setTextColor(0,0,0);
+                            } else {
+                                doc.text(part, currentX, yPos);
+                            }
+                        }
+                        
+                        currentX += widths[idx];
+                        if (idx < parts.length - 1) {
+                            currentX += gap / 2;
+                            if(!dryRun) doc.text('|', currentX - gap/2 + 0.5, yPos);
+                            currentX += gap / 2;
+                        }
+                    });
+
+                    yPos += 6;
+                } else {
+                    // Standard Summary
+                    const dims = doc.getTextDimensions(rawLine, { maxWidth: maxLineWidth });
+                    if (!dryRun) doc.text(rawLine, margin, yPos, { maxWidth: maxLineWidth, align: "justify" });
+                    yPos += dims.h + 2;
+                }
+            }
+          }
+          return yPos;
+      };
+
+      // 3. Adaptive Height Execution
+      const measureDoc = new jsPDF({ unit: 'mm', format: 'a4' });
+      measureDoc.setFont("times");
+      const requiredHeight = renderDocument(measureDoc, true);
+      
+      // Use standard A4 height (297) minimum, or expand if content is longer to prevent cut-off.
+      const finalHeight = Math.max(297, requiredHeight + 20); // +20mm padding
+
       const doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: 'a4'
+        format: [210, finalHeight] // Custom single page
       });
-
-      // --- CONFIGURATION ---
-      const pageWidth = 210;
-      const pageHeight = 297;
-      const margin = 12; 
-      const maxLineWidth = pageWidth - (margin * 2);
-      let yPos = 15;
-
       doc.setFont("times");
 
-      // Helper to check page bounds
-      const checkPageBreak = (heightNeeded: number) => {
-        if (yPos + heightNeeded > pageHeight - margin) {
-          doc.addPage();
-          yPos = 15;
-        }
-      };
+      renderDocument(doc, false);
 
-      // --- BOLD TEXT PARSER HELPER ---
-      // Prints a line that might contain **bold** segments.
-      // NOTE: Only supports simple inline bolding (no wrapping logic for mixed styles to keep it stable)
-      const printLineWithBold = (line: string, x: number, y: number, fontSize: number, align: 'left' | 'center' | 'justify' = 'left', maxWidth?: number) => {
-        
-        // If line is too long and needs wrapping (and is NOT a header), fallback to standard print to avoid overlapping
-        // We only apply mixed-style bolding to short lines or bullet headers (like Skills)
-        const textWidth = doc.getTextWidth(line.replace(/\*\*/g, ''));
-        if (maxWidth && textWidth > maxWidth && align === 'justify') {
-           // Fallback for wrapped justified paragraphs: Strip bolding to ensure clean wrapping
-           doc.setFontSize(fontSize);
-           doc.setFont("times", "normal");
-           doc.text(line.replace(/\*\*/g, ''), x, y, { maxWidth, align: 'justify' });
-           return doc.getTextDimensions(line.replace(/\*\*/g, ''), { maxWidth }).h;
-        }
+      doc.save(finalFilename);
 
-        doc.setFontSize(fontSize);
-        const parts = line.split(/(\*\*.*?\*\*)/g);
-        let currentX = x;
-        
-        // Center alignment offset calculation if needed
-        if (align === 'center') {
-           currentX = (pageWidth - textWidth) / 2;
-        }
-
-        parts.forEach(part => {
-           if (part.startsWith('**') && part.endsWith('**')) {
-              const text = part.replace(/\*\*/g, '');
-              doc.setFont("times", "bold");
-              doc.text(text, currentX, y);
-              currentX += doc.getTextWidth(text);
-           } else if (part) {
-              doc.setFont("times", "normal");
-              doc.text(part, currentX, y);
-              currentX += doc.getTextWidth(part);
-           }
-        });
-
-        return fontSize * 0.3527 + 2; // Approximate height (mm)
-      };
-
-
-      const lines = tailoredCV.split('\n');
-
-      for (let i = 0; i < lines.length; i++) {
-        let cleanLine = lines[i].trim();
-        // We keep bold markers in 'cleanLine' to parse them in 'printLineWithBold'
-        // But for structural checks, we might want a raw string
-        let rawLine = cleanLine.replace(/\*\*/g, ''); 
-        
-        if (!cleanLine) {
-            if (yPos > 20) yPos += 3;
-            continue;
-        }
-
-        if (cleanLine.startsWith('# ')) {
-          // --- H1: NAME ---
-          const text = rawLine.replace('# ', '').toUpperCase();
-          doc.setFontSize(20);
-          doc.setFont("times", "bold");
-          
-          checkPageBreak(12);
-          doc.text(text, pageWidth / 2, yPos, { align: "center" });
-          yPos += 9;
-
-        } else if (cleanLine.startsWith('## ')) {
-          // --- H2: SECTION HEADERS ---
-          const text = rawLine.replace('## ', '').toUpperCase();
-          doc.setFontSize(11);
-          doc.setFont("times", "bold");
-          doc.setTextColor(30, 58, 138); 
-          
-          checkPageBreak(10);
-          yPos += 4;
-          doc.text(text, margin, yPos);
-          
-          doc.setLineWidth(0.5);
-          doc.setDrawColor(30, 58, 138);
-          doc.line(margin, yPos + 1.5, pageWidth - margin, yPos + 1.5);
-          
-          doc.setTextColor(0, 0, 0); 
-          yPos += 7;
-
-        } else if (cleanLine.startsWith('### ')) {
-          // --- H3: ROLE / COMPANY ---
-          const roleText = rawLine.replace('### ', '');
-          doc.setFontSize(10);
-          doc.setFont("times", "bold");
-          
-          // Look ahead for H4 (Date)
-          let dateText = "";
-          if (i + 1 < lines.length && lines[i+1].trim().startsWith('####')) {
-             dateText = lines[i+1].trim().replace('#### ', '').replace(/\*\*/g, '');
-             i++; 
-          }
-
-          checkPageBreak(6);
-          doc.text(roleText, margin, yPos);
-          if (dateText) {
-            doc.setFont("times", "italic");
-            doc.text(dateText, pageWidth - margin, yPos, { align: "right" });
-            doc.setFont("times", "bold");
-          }
-          yPos += 5;
-
-        } else if (cleanLine.startsWith('- ')) {
-           // --- BULLETS ---
-           const text = cleanLine.replace('- ', ''); // Keep ** markers
-           const bulletIndent = 4;
-           const bulletWidth = maxLineWidth - bulletIndent;
-           
-           // Heuristic: If it starts with **, it's likely a Skill line (Short, non-wrapping)
-           // If it's long, it's an experience bullet (Wrap, ignore bold)
-           const isSkillLine = text.startsWith('**') && text.length < 100;
-           
-           if (isSkillLine) {
-               // Skills: Support Bold Parsing
-               doc.setFontSize(9.5);
-               doc.setFont("times", "normal"); // Reset base
-               checkPageBreak(6);
-               doc.text("•", margin, yPos);
-               printLineWithBold(text, margin + bulletIndent, yPos, 9.5);
-               yPos += 5;
-           } else {
-               // Experience: Standard Wrapped Text
-               doc.setFontSize(9.5);
-               doc.setFont("times", "normal");
-               
-               const rawText = text.replace(/\*\*/g, ''); // Strip bold for wrapping safety
-               const dims = doc.getTextDimensions(rawText, { maxWidth: bulletWidth });
-               checkPageBreak(dims.h + 2);
-               doc.text("•", margin, yPos);
-               doc.text(rawText, margin + bulletIndent, yPos, { maxWidth: bulletWidth, align: "justify" });
-               yPos += dims.h + 2;
-           }
-
-        } else if (cleanLine.startsWith('####')) {
-             // Fallback H4
-             const text = rawLine.replace('#### ', '');
-             doc.setFontSize(9.5);
-             doc.setFont("times", "italic");
-             doc.text(text, pageWidth - margin, yPos - 5, { align: "right" });
-
-        } else {
-          // --- PARAGRAPHS ---
-          // Check for Contact Info
-          if (rawLine.includes('|') || rawLine.includes('@')) {
-            doc.setFontSize(9.5);
-            doc.setFont("times", "normal");
-            checkPageBreak(6);
-            doc.text(rawLine, pageWidth / 2, yPos, { align: "center" });
-            yPos += 6;
-          } else {
-            // Summary Paragraph
-            doc.setFontSize(9.5);
-            doc.setFont("times", "normal");
-            const dims = doc.getTextDimensions(rawLine, { maxWidth: maxLineWidth });
-            checkPageBreak(dims.h + 2);
-            doc.text(rawLine, margin, yPos, { maxWidth: maxLineWidth, align: "justify" });
-            yPos += dims.h + 2;
-          }
-        }
-      }
-
-      doc.save('Tejaswee_Singh_CV.pdf');
     } catch (err: any) {
       console.error("Download failed", err);
       setError("Failed to generate PDF. Please try again.");

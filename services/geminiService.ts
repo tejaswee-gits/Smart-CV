@@ -53,27 +53,30 @@ EXECUTION GUIDELINES:
 
 1.  **Strategic Alignment**: Identify the top 3 core competencies in the JD. Reorder and rewrite the "Skills" and "Experience" sections to prioritize these.
 2.  **Impact-First Writing**: Rewrite every bullet point using the "Action Verb + Task + Quantifiable Result" formula.
-    *   *Bad*: "Responsible for sales."
-    *   *Good*: "Spearheaded sales strategy driving €1.2M revenue growth (15% YoY) across 4 markets."
-3.  **Space Economy**: 
-    *   Max 400 words.
-    *   No widows/orphans (single words on a new line).
-    *   Combine related bullets to save vertical space.
+3.  **Space Economy**: Max 450 words. Combine related bullets.
 
 --------------------------------------------------
 FORMAT REQUIREMENTS (STRICT MARKDOWN):
 
-*   **Structure**: Follow the structure below exactly.
-*   **Dates**: Use '####' for the Date/Location line. This is crucial for the PDF layout engine.
-*   **Skills**: Use the format "- **Category**: Skill, Skill". The category MUST be bolded.
+1.  **METADATA HEADER**: The VERY FIRST line of your response MUST be a metadata tag containing the Company Name and Job Title extracted from the JD.
+    Format: \`<!-- METADATA: Company_Name_Job_Title -->\`
+    *   Replace spaces with underscores (_).
+    *   Example: \`<!-- METADATA: LOreal_Ecommerce_Manager -->\` or \`<!-- METADATA: Google_Product_Owner -->\`.
+    *   Do NOT add date or extension here.
+
+2.  **CV CONTENT**:
+    *   **Structure**: Follow the template below.
+    *   **Dates**: Use '####' for the Date/Location line.
+    *   **Contact**: Ensure the LinkedIn URL is written out fully (e.g., https://linkedin.com/...) so it can be hyperlinked.
+    *   **Skills**: Use the format "- **Category**: Skill, Skill". The category MUST be bolded.
 
 **Markdown Template**:
 
 # [Name]
-[Email] | [Phone] | [Location] | [LinkedIn]
+[Email] | [Phone] | [Location] | [Full LinkedIn URL]
 
 ## PROFESSIONAL SUMMARY
-[A single, justified, punchy paragraph of 3-4 lines maximum. Focus on value proposition.]
+[A single, justified, punchy paragraph of 3-4 lines maximum.]
 
 ## KEY SKILLS
 - **[Category Name]**: [Skill], [Skill], [Skill], [Skill]
