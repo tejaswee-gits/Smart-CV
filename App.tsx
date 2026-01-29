@@ -1,6 +1,6 @@
 import React, { useState, useRef, useEffect } from 'react';
-import { Download, Sparkles, FileText, Wand2, MessageSquare, Send, User, Bot, Zap, RefreshCw, Printer, Loader2, Edit, Eye, X, MessageCircle } from 'lucide-react';
-import { generateTailoredCV, chatWithAI } from './services/geminiService';
+import { Download, Sparkles, FileText, Wand2, MessageSquare, Send, User, Bot, Zap, RefreshCw, Printer, Loader2, Edit, Eye, X, MessageCircle, PenTool, Copy, Check, Globe } from 'lucide-react';
+import { generateTailoredCV, generateCoverLetter, chatWithAI } from './services/geminiService';
 import CVPreview from './components/CVPreview';
 import { MasterCVData, ChatMessage } from './types';
 import { jsPDF } from 'jspdf';
@@ -56,7 +56,7 @@ const INITIAL_MASTER_CV_DATA: MasterCVData = {
       location: "Paris, France",
       dates: "Dec 2022 - Jul 2023",
       highlights: [
-        "GTM Strategy & Launch: Owned end-to-end Go-to-Market strategy for Nissan Juke MC across 30+ EMEA markets, coordinating pricing, channel strategy, and marketing execution",
+        "GTM Strategy & Launch: Owned end-to-end Go-to-Market strategy for Nissan Juke MC across 5 EMEA markets, coordinating pricing, channel strategy, and marketing execution",
         "Pricing & Positioning: Developed pricing scenarios and commercial models to optimize revenue potential across market segments",
         "Market Research: Conducted comprehensive competitive intelligence analysis, delivering insights that shaped strategic positioning",
         "Fleet Logistics & B2B Marketing: Managed press/dealer fleet logistics (50+ vehicles) and collaborated with LCV team on B2B messaging (TCO, residual value)",
@@ -135,10 +135,18 @@ const App: React.FC = () => {
   const [jobDescription, setJobDescription] = useState('');
   const [tailoredCV, setTailoredCV] = useState('');
   const [filenameBase, setFilenameBase] = useState('CV');
+  const [language, setLanguage] = useState<'EN' | 'FR'>('EN');
+  
+  // CV Generation State
   const [isGenerating, setIsGenerating] = useState(false);
   const [isDownloading, setIsDownloading] = useState(false);
   const [error, setError] = useState('');
   const [success, setSuccess] = useState('');
+  
+  // Cover Letter State
+  const [coverLetter, setCoverLetter] = useState('');
+  const [isGeneratingCL, setIsGeneratingCL] = useState(false);
+  const [clCopied, setClCopied] = useState(false);
   
   // Chat State
   const [isChatOpen, setIsChatOpen] = useState(false);
@@ -153,16 +161,18 @@ const App: React.FC = () => {
     chatEndRef.current?.scrollIntoView({ behavior: 'smooth' });
   }, [chatMessages, isChatOpen]);
 
-  const handleGenerateCV = async () => {
+  const handleGenerateAll = async () => {
     if (!jobDescription.trim()) {
       setError('Please provide a job description.');
       return;
     }
 
     setIsGenerating(true);
+    setIsGeneratingCL(true);
     setError('');
     setSuccess('');
     setTailoredCV('');
+    setCoverLetter('');
     setViewMode('preview');
 
     try {
@@ -170,9 +180,9 @@ const App: React.FC = () => {
         .map(m => `${m.role.toUpperCase()}: ${m.content}`)
         .join('\n');
 
-      const rawResult = await generateTailoredCV(INITIAL_MASTER_CV_DATA, jobDescription, chatContext);
+      // 1. Generate CV
+      const rawResult = await generateTailoredCV(INITIAL_MASTER_CV_DATA, jobDescription, chatContext, language);
       
-      // Metadata Parsing for Filename
       const metadataRegex = /<!-- METADATA: (.*?) -->/;
       const match = rawResult.match(metadataRegex);
       let cleanCV = rawResult;
@@ -185,12 +195,42 @@ const App: React.FC = () => {
       }
 
       setTailoredCV(cleanCV);
-      setSuccess('CV Generated successfully! Review and download below.');
+      setSuccess('CV & Cover Letter Generated successfully!');
+
+      // 2. Generate Cover Letter (can be parallelized, but sequential allows error isolation)
+      try {
+        const clResult = await generateCoverLetter(INITIAL_MASTER_CV_DATA, jobDescription, language);
+        setCoverLetter(clResult);
+      } catch (clErr) {
+        console.error("CL Generation failed", clErr);
+        // Don't block UI, just leave CL empty or show error in CL box
+      }
+
     } catch (err: any) {
-      setError(err.message || "An error occurred while generating the CV.");
+      setError(err.message || "An error occurred while generating.");
     } finally {
       setIsGenerating(false);
+      setIsGeneratingCL(false);
     }
+  };
+
+  const handleGenerateCoverLetterOnly = async () => {
+     if (!jobDescription.trim()) return;
+     setIsGeneratingCL(true);
+     try {
+        const clResult = await generateCoverLetter(INITIAL_MASTER_CV_DATA, jobDescription, language);
+        setCoverLetter(clResult);
+     } catch(e) {
+        console.error(e);
+     } finally {
+        setIsGeneratingCL(false);
+     }
+  }
+
+  const copyCoverLetter = () => {
+    navigator.clipboard.writeText(coverLetter);
+    setClCopied(true);
+    setTimeout(() => setClCopied(false), 2000);
   };
 
   const handleChatMessage = async () => {
@@ -203,14 +243,15 @@ const App: React.FC = () => {
     setChatInput('');
 
     try {
-      const reply = await chatWithAI(updatedMessages, chatInput);
+      // Pass the current CV as context to the AI
+      const reply = await chatWithAI(updatedMessages, chatInput, tailoredCV || "CV not generated yet.");
       setChatMessages([...updatedMessages, { role: 'model', content: reply }]);
     } catch (err) {
       console.error("Chat Error", err);
     }
   };
 
-  // --- PDF GENERATOR V5: Smart Links, Adaptive Height, Metadata Naming ---
+  // --- PDF GENERATOR ---
   const downloadAsPDF = () => {
     if (!tailoredCV) {
       setError('No CV to download. Please generate one first.');
@@ -220,28 +261,24 @@ const App: React.FC = () => {
     setIsDownloading(true);
 
     try {
-      // 1. Filename Construction: [Company]_[Title]_[Date]_[EN]
       const date = new Date();
       const day = date.getDate();
       const month = date.toLocaleString('default', { month: 'short' });
-      const dateStr = `${day}_${month}`; // e.g., 1_Jan
+      const dateStr = `${day}_${month}`;
       const safeFilenameBase = filenameBase.replace(/[^a-zA-Z0-9_]/g, '_');
-      const finalFilename = `${safeFilenameBase}_${dateStr}_EN.pdf`;
+      const langSuffix = language;
+      const finalFilename = `${safeFilenameBase}_${dateStr}_${langSuffix}.pdf`;
 
-      // 2. Rendering Logic (Abstracted for Dry Run & Final Run)
-      // Returns the total height used
       const renderDocument = (doc: jsPDF, dryRun: boolean): number => {
           const pageWidth = 210;
           const margin = 12;
           const maxLineWidth = pageWidth - (margin * 2);
           let yPos = 15;
 
-          // Helper to add Bold segments
           const printLineWithBold = (line: string, x: number, y: number, fontSize: number, align: 'left' | 'center' | 'justify' = 'left', maxWidth?: number) => {
               const textWidth = doc.getTextWidth(line.replace(/\*\*/g, ''));
               
               if (maxWidth && textWidth > maxWidth && align === 'justify') {
-                  // Fallback for wrapped blocks
                   doc.setFontSize(fontSize);
                   doc.setFont("times", "normal");
                   if (!dryRun) doc.text(line.replace(/\*\*/g, ''), x, y, { maxWidth, align: 'justify' });
@@ -267,7 +304,7 @@ const App: React.FC = () => {
                   currentX += doc.getTextWidth(cleanPart);
               });
 
-              return fontSize * 0.3527 + 2; // Line height approx
+              return fontSize * 0.3527 + 2; 
           };
 
           const lines = tailoredCV.split('\n');
@@ -282,7 +319,6 @@ const App: React.FC = () => {
             }
 
             if (cleanLine.startsWith('# ')) {
-                // Name
                 const text = rawLine.replace('# ', '').toUpperCase();
                 doc.setFontSize(20);
                 doc.setFont("times", "bold");
@@ -290,7 +326,6 @@ const App: React.FC = () => {
                 yPos += 9;
 
             } else if (cleanLine.startsWith('## ')) {
-                // Section
                 const text = rawLine.replace('## ', '').toUpperCase();
                 doc.setFontSize(11);
                 doc.setFont("times", "bold");
@@ -305,7 +340,6 @@ const App: React.FC = () => {
                 yPos += 7;
 
             } else if (cleanLine.startsWith('### ')) {
-                // Role
                 const roleText = rawLine.replace('### ', '');
                 doc.setFontSize(10);
                 doc.setFont("times", "bold");
@@ -327,7 +361,6 @@ const App: React.FC = () => {
                 yPos += 5;
 
             } else if (cleanLine.startsWith('- ')) {
-                // Bullets / Skills
                 const text = cleanLine.replace('- ', '');
                 const bulletIndent = 4;
                 const isSkillLine = text.startsWith('**') && text.length < 100;
@@ -337,7 +370,7 @@ const App: React.FC = () => {
 
                 if (isSkillLine) {
                     if (!dryRun) doc.text("•", margin, yPos);
-                    yPos += printLineWithBold(text, margin + bulletIndent, yPos, 9.5) - 2 + 5; // Adjust spacing
+                    yPos += printLineWithBold(text, margin + bulletIndent, yPos, 9.5) - 2 + 5;
                 } else {
                     const rawText = text.replace(/\*\*/g, '');
                     const dims = doc.getTextDimensions(rawText, { maxWidth: maxLineWidth - bulletIndent });
@@ -349,39 +382,53 @@ const App: React.FC = () => {
                 }
 
             } else if (cleanLine.startsWith('####')) {
-                // Orphan Date
                 const text = rawLine.replace('#### ', '');
                 doc.setFontSize(9.5);
                 doc.setFont("times", "italic");
                 if (!dryRun) doc.text(text, pageWidth - margin, yPos - 5, { align: "right" });
 
             } else {
-                // Paragraphs & Contact
                 doc.setFontSize(9.5);
                 doc.setFont("times", "normal");
                 
                 if (rawLine.includes('|') || rawLine.includes('@')) {
-                    // Contact Line with potential Links
                     const parts = rawLine.split('|').map(p => p.trim());
-                    // Calculate center alignment manually
                     let totalWidth = 0;
-                    const gap = 3; // mm space around pipe
-                    const widths = parts.map(p => doc.getTextWidth(p));
+                    const gap = 3;
+                    
+                    // Parse parts to check for Markdown links [Text](URL)
+                    const parsedParts = parts.map(part => {
+                        const linkMatch = part.match(/^\[(.*?)\]\((.*?)\)$/);
+                        if (linkMatch) {
+                            return { text: linkMatch[1], url: linkMatch[2], isLink: true };
+                        }
+                        return { text: part, url: '', isLink: false };
+                    });
+
+                    // Calculate widths using text content only
+                    const widths = parsedParts.map(p => doc.getTextWidth(p.text));
+                    
                     totalWidth = widths.reduce((a, b) => a + b, 0) + (parts.length - 1) * gap;
                     let currentX = (pageWidth - totalWidth) / 2;
 
-                    parts.forEach((part, idx) => {
-                        const isUrl = part.toLowerCase().includes('http') || part.toLowerCase().includes('linkedin');
-                        
+                    parsedParts.forEach((partObj, idx) => {
                         if (!dryRun) {
-                            if (isUrl) {
-                                doc.setTextColor(30, 58, 138); // Link Blue
-                                doc.text(part, currentX, yPos);
-                                // Add clickable link area
-                                doc.link(currentX, yPos - 3, widths[idx], 4, { url: part.startsWith('http') ? part : `https://${part}` });
+                            if (partObj.isLink) {
+                                doc.setTextColor(0, 0, 128); // Navy Blue
+                                doc.text(partObj.text, currentX, yPos);
+                                doc.link(currentX, yPos - 3, widths[idx], 4, { url: partObj.url });
                                 doc.setTextColor(0,0,0);
                             } else {
-                                doc.text(part, currentX, yPos);
+                                // Heuristic for raw URLs or emails if needed, but primary is Markdown link
+                                const isRawUrl = partObj.text.toLowerCase().includes('http');
+                                if (isRawUrl) {
+                                    doc.setTextColor(0, 0, 128);
+                                    doc.text(partObj.text, currentX, yPos);
+                                    doc.link(currentX, yPos - 3, widths[idx], 4, { url: partObj.text.startsWith('http') ? partObj.text : `https://${partObj.text}` });
+                                    doc.setTextColor(0,0,0);
+                                } else {
+                                    doc.text(partObj.text, currentX, yPos);
+                                }
                             }
                         }
                         
@@ -395,7 +442,6 @@ const App: React.FC = () => {
 
                     yPos += 6;
                 } else {
-                    // Standard Summary
                     const dims = doc.getTextDimensions(rawLine, { maxWidth: maxLineWidth });
                     if (!dryRun) doc.text(rawLine, margin, yPos, { maxWidth: maxLineWidth, align: "justify" });
                     yPos += dims.h + 2;
@@ -405,18 +451,15 @@ const App: React.FC = () => {
           return yPos;
       };
 
-      // 3. Adaptive Height Execution
       const measureDoc = new jsPDF({ unit: 'mm', format: 'a4' });
       measureDoc.setFont("times");
       const requiredHeight = renderDocument(measureDoc, true);
-      
-      // Use standard A4 height (297) minimum, or expand if content is longer to prevent cut-off.
-      const finalHeight = Math.max(297, requiredHeight + 20); // +20mm padding
+      const finalHeight = Math.max(297, requiredHeight + 20); 
 
       const doc = new jsPDF({
         orientation: 'portrait',
         unit: 'mm',
-        format: [210, finalHeight] // Custom single page
+        format: [210, finalHeight]
       });
       doc.setFont("times");
 
@@ -445,13 +488,34 @@ const App: React.FC = () => {
 
       <main className="max-w-7xl mx-auto px-4 grid grid-cols-1 lg:grid-cols-12 gap-8 print:block print:w-full print:max-w-none print:p-0">
         
-        {/* --- LEFT COLUMN: INPUT --- */}
+        {/* --- LEFT COLUMN: INPUTS --- */}
         <div className={`lg:col-span-5 space-y-6 print:hidden ${tailoredCV ? '' : 'lg:col-start-4 lg:col-span-6'}`}>
+          
+          {/* JOB DESCRIPTION CARD */}
           <div className="bg-slate-800/80 backdrop-blur-md border border-slate-700 rounded-2xl p-6 shadow-xl">
-             <div className="flex items-center gap-3 mb-4">
-               <FileText className="w-6 h-6 text-purple-400" />
-               <h2 className="text-lg font-semibold text-white">Job Context</h2>
+             <div className="flex items-center justify-between mb-4">
+               <div className="flex items-center gap-3">
+                 <FileText className="w-6 h-6 text-purple-400" />
+                 <h2 className="text-lg font-semibold text-white">Job Context</h2>
+               </div>
+               
+               {/* LANGUAGE TOGGLE */}
+               <div className="flex items-center bg-slate-900 rounded-lg p-1 border border-slate-700">
+                  <button 
+                    onClick={() => setLanguage('EN')}
+                    className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${language === 'EN' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-white'}`}
+                  >
+                    EN
+                  </button>
+                  <button 
+                    onClick={() => setLanguage('FR')}
+                    className={`px-3 py-1 rounded-md text-xs font-bold transition-all ${language === 'FR' ? 'bg-indigo-600 text-white shadow-sm' : 'text-slate-500 hover:text-white'}`}
+                  >
+                    FR
+                  </button>
+               </div>
              </div>
+
              <p className="text-xs text-slate-400 mb-2">Paste the Job Description to tailor your CV.</p>
              <textarea
                className="w-full h-64 bg-slate-900 border border-slate-700 rounded-xl p-4 text-sm font-mono text-slate-300 focus:ring-2 focus:ring-purple-500 outline-none resize-none transition-all placeholder:text-slate-600"
@@ -461,7 +525,7 @@ const App: React.FC = () => {
              />
              <div className="mt-4 flex justify-end">
                <button
-                 onClick={handleGenerateCV}
+                 onClick={handleGenerateAll}
                  disabled={isGenerating || !jobDescription}
                  className={`flex items-center gap-2 px-8 py-3 rounded-xl font-bold text-white shadow-lg transition-all transform active:scale-95 ${isGenerating ? 'bg-slate-600 cursor-not-allowed' : 'bg-gradient-to-r from-indigo-600 to-purple-600 hover:from-indigo-500 hover:to-purple-500 shadow-indigo-500/30'}`}
                >
@@ -473,12 +537,52 @@ const App: React.FC = () => {
                  ) : (
                    <>
                      <Wand2 className="w-5 h-5" />
-                     Generate CV
+                     Generate All
                    </>
                  )}
                </button>
              </div>
           </div>
+
+          {/* COVER LETTER CARD */}
+          <div className="bg-slate-800/80 backdrop-blur-md border border-slate-700 rounded-2xl p-6 shadow-xl">
+             <div className="flex items-center justify-between mb-4">
+               <div className="flex items-center gap-3">
+                 <PenTool className="w-6 h-6 text-pink-400" />
+                 <h2 className="text-lg font-semibold text-white">Cover Letter AI</h2>
+               </div>
+               <button
+                  onClick={handleGenerateCoverLetterOnly}
+                  disabled={isGeneratingCL || !jobDescription}
+                  className={`px-3 py-1.5 rounded-lg text-xs font-medium transition-colors ${isGeneratingCL ? 'bg-slate-700 text-slate-400' : 'bg-slate-700 hover:bg-slate-600 text-white'}`}
+               >
+                 {isGeneratingCL ? "Updating..." : "Regenerate Draft"}
+               </button>
+             </div>
+
+             {coverLetter ? (
+               <div className="relative group">
+                 <textarea
+                   value={coverLetter}
+                   onChange={(e) => setCoverLetter(e.target.value)}
+                   className="w-full h-64 bg-slate-900 border border-slate-700 rounded-xl p-4 text-sm font-sans text-slate-300 focus:ring-2 focus:ring-pink-500 outline-none resize-none transition-all leading-relaxed whitespace-pre-wrap"
+                   placeholder="Your cover letter will appear here..."
+                 />
+                 <button 
+                   onClick={copyCoverLetter}
+                   className="absolute top-4 right-4 p-2 bg-slate-800/80 rounded-lg text-slate-300 hover:text-white hover:bg-slate-700 transition-all opacity-0 group-hover:opacity-100"
+                   title="Copy to Clipboard"
+                 >
+                   {clCopied ? <Check className="w-4 h-4 text-emerald-400" /> : <Copy className="w-4 h-4" />}
+                 </button>
+               </div>
+             ) : (
+               <div className="h-24 bg-slate-900/50 rounded-xl border border-slate-700 border-dashed flex items-center justify-center text-slate-500 text-sm">
+                  <p>Paste a JD above to automatically generate.</p>
+               </div>
+             )}
+          </div>
+
            {error && <div className="bg-red-500/10 border border-red-500/50 text-red-200 p-4 rounded-xl text-sm">{error}</div>}
            {success && <div className="bg-emerald-500/10 border border-emerald-500/50 text-emerald-200 p-4 rounded-xl text-sm">{success}</div>}
         </div>

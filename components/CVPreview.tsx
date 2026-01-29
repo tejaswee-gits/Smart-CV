@@ -26,6 +26,7 @@ const CVPreview: React.FC<CVPreviewProps> = ({ content }) => {
                 const isContact = props.children?.toString().includes('|') && props.children?.toString().includes('@');
                 return <p className={`mb-2 text-sm leading-relaxed ${isContact ? 'text-center text-slate-600 font-medium -mt-2 mb-6' : 'text-justify'}`} {...props} />
             },
+            a: ({node, ...props}) => <a className="text-blue-900 underline hover:text-blue-700" {...props} />,
             ul: ({node, ...props}) => <ul className="list-disc pl-5 mb-2 space-y-1" {...props} />,
             li: ({node, ...props}) => <li className="text-sm leading-snug pl-1 text-justify" {...props} />,
           }}
